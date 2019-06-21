@@ -1,39 +1,62 @@
 module LazyScroll exposing
     ( Direction(..)
-    , Model
-    , Options
     , Scroll
     , Viewport
-    , initCmd
+    , getViewport
+    , getViewportOf
     , onScroll
     , scroller
     , subscriptions
     )
 
+import Json.Decode
+import LazyScroll.Viewport as Viewport
+import LazyScroll.Scroll as Scroll
 import Browser.Dom
 import Browser.Events
 import Css
 import Html.Styled
 import Html.Styled.Attributes
 import Html.Styled.Events
-import Json.Decode
 import Task
 
 
-type alias Scroll =
-    { left : Float, top : Float }
-
-
-type alias Viewport =
-    { width : Float, height : Float }
-
+type alias Scroll = Scroll.Scroll
+type alias Viewport = Viewport.Viewport
 
 type Direction
     = Horizontal
     | Vertical
 
 
-type alias Options item msg =
+getViewport : (Viewport -> msg) -> Cmd msg
+getViewport viewportToMsg =
+    Cmd.map viewportToMsg <|
+        Task.perform Viewport.fromBrowser Browser.Dom.getViewport
+
+
+getViewportOf : String -> (Result Browser.Dom.Error Viewport -> msg) -> Cmd msg
+getViewportOf id viewportToMsg =
+    Cmd.map viewportToMsg <|
+        Task.attempt
+            (Result.map Viewport.fromBrowser)
+            (Browser.Dom.getViewportOf id)
+
+
+subscriptions : (Viewport -> msg) -> Sub msg
+subscriptions viewportToMsg =
+    Sub.map viewportToMsg <|
+        Browser.Events.onResize
+            (\w h -> Viewport.fromWidthHeight (toFloat w) (toFloat h))
+
+
+onScroll : (Scroll -> msg) -> Html.Styled.Attribute msg
+onScroll scrollToMsg =
+    Html.Styled.Events.on "scroll"
+        (Json.Decode.map scrollToMsg Scroll.jsonDecoder)
+
+
+scroller :
     { direction : Direction
     , itemSize : Float
     , margin : Float
@@ -41,42 +64,12 @@ type alias Options item msg =
     , scrollMsg : Scroll -> msg
     , viewItem : item -> Html.Styled.Html msg
     }
-
-
-type alias Model item =
-    { viewport : Viewport, scroll : Scroll, items : List item }
-
-
-initCmd : (Viewport -> msg) -> Cmd msg
-initCmd transform =
-    Task.perform
-        (\{ viewport } ->
-            transform (Viewport viewport.width viewport.height)
-        )
-        Browser.Dom.getViewport
-
-
-subscriptions : (Viewport -> msg) -> Sub msg
-subscriptions transform =
-    Browser.Events.onResize
-        (\w h -> transform <| Viewport (toFloat w) (toFloat h))
-
-
-decodeScroll : Json.Decode.Decoder Scroll
-decodeScroll =
-    Json.Decode.field "target" <|
-        Json.Decode.map2 Scroll
-            (Json.Decode.field "scrollLeft" Json.Decode.float)
-            (Json.Decode.field "scrollTop" Json.Decode.float)
-
-
-onScroll : (Scroll -> msg) -> Html.Styled.Attribute msg
-onScroll scrollToMsg =
-    Html.Styled.Events.on "scroll"
-        (Json.Decode.map scrollToMsg decodeScroll)
-
-
-scroller : Options item msg -> Model item -> Html.Styled.Html msg
+    ->
+        { viewport : Viewport
+        , scroll : Scroll
+        , items : List item
+        }
+    -> Html.Styled.Html msg
 scroller options =
     let
         groupSize =
@@ -89,8 +82,8 @@ scroller options =
                     , size = Css.width
                     , altSize = Css.height
                     , offset = Css.left
-                    , vpSize = .width
-                    , scOffset = .left
+                    , vpSize = Viewport.width
+                    , scOffset = Scroll.left
                     }
 
                 Vertical ->
@@ -98,8 +91,8 @@ scroller options =
                     , size = Css.height
                     , altSize = Css.width
                     , offset = Css.top
-                    , vpSize = .height
-                    , scOffset = .top
+                    , vpSize = Viewport.height
+                    , scOffset = Scroll.top
                     }
 
         containerStyle =
@@ -108,9 +101,6 @@ scroller options =
                 , Css.height (Css.pct 100)
                 , Css.width (Css.pct 100)
                 ]
-
-        containerAttributes =
-            [ containerStyle, onScroll options.scrollMsg ]
 
         placeholderStyle =
             Html.Styled.Attributes.css
@@ -124,9 +114,6 @@ scroller options =
         placeholderSizeStyle itemCount =
             Html.Styled.Attributes.css
                 [ size <| Css.px <| placeholderSize itemCount ]
-
-        placeholderAttributes itemCount =
-            [ placeholderStyle, placeholderSizeStyle itemCount ]
 
         itemStyle =
             Html.Styled.Attributes.css
@@ -142,11 +129,10 @@ scroller options =
             Html.Styled.Attributes.css
                 [ offset <| Css.px <| itemOffset i ]
 
-        itemAttributes i =
-            [ itemStyle, itemOffsetStyle i ]
-
         itemContainer ( i, item ) =
-            Html.Styled.div (itemAttributes i) [ options.viewItem item ]
+            Html.Styled.div
+                [ itemStyle, itemOffsetStyle i ]
+                [ options.viewItem item ]
 
         takeCount vp =
             ceiling <| 3 * vp / groupSize
@@ -162,8 +148,13 @@ scroller options =
                 List.drop (dropCount vp sc) items
     in
     \{ viewport, scroll, items } ->
-        Html.Styled.div containerAttributes
-            [ Html.Styled.div (placeholderAttributes <| List.length items) <|
+        Html.Styled.div
+            [ containerStyle, onScroll options.scrollMsg ]
+            [ Html.Styled.div
+                [ placeholderStyle
+                , placeholderSizeStyle <| List.length items
+                ]
+              <|
                 List.map itemContainer <|
                     takeDrop (vpSize viewport) (scOffset scroll) <|
                         enumerate items
